@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/thefindler/shared/pg/model"
+	"github.com/thefindler/core/pg/model"
 	"github.com/google/uuid"
 )
 
