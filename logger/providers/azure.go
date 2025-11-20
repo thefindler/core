@@ -2,6 +2,7 @@ package providers
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/microsoft/ApplicationInsights-Go/appinsights"
@@ -13,17 +14,57 @@ type AzureProvider struct {
 	client appinsights.TelemetryClient
 }
 
-// NewAzureProvider creates a new Azure Application Insights logging provider
-// Config from LOG_CONFIG["azure"]: {"instrumentation_key": "xxx", "endpoint_url": "...", "max_batch_size": 8192, "max_batch_interval": 2}
-func NewAzureProvider() (*AzureProvider, error) {
-	instrumentationKey := GetConfigString("azure", "instrumentation_key")
-	if instrumentationKey == "" {
-		return nil, fmt.Errorf("azure.instrumentation_key not found in LOG_CONFIG")
+// parseConnectionString extracts InstrumentationKey and IngestionEndpoint from Azure connection string
+func parseConnectionString(connStr string) (instrumentationKey, ingestionEndpoint string, err error) {
+	parts := strings.Split(connStr, ";")
+	for _, part := range parts {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(kv[0])
+		value := strings.TrimSpace(kv[1])
+		
+		switch key {
+		case "InstrumentationKey":
+			instrumentationKey = value
+		case "IngestionEndpoint":
+			ingestionEndpoint = value
+		}
 	}
 	
-	// Create telemetry client with configurable settings
+	if instrumentationKey == "" {
+		return "", "", fmt.Errorf("InstrumentationKey not found in connection string")
+	}
+	
+	return instrumentationKey, ingestionEndpoint, nil
+}
+
+// NewAzureProvider creates a new Azure Application Insights logging provider
+// Requires LOG_CONFIG["azure"]["connection_string"] in format:
+// "InstrumentationKey=xxx;IngestionEndpoint=https://...;ApplicationId=xxx"
+func NewAzureProvider() (*AzureProvider, error) {
+	connectionString := GetConfigString("azure", "connection_string")
+	if connectionString == "" {
+		return nil, fmt.Errorf("azure.connection_string not found in LOG_CONFIG")
+	}
+	
+	instrumentationKey, ingestionEndpoint, err := parseConnectionString(connectionString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse connection string: %w", err)
+	}
+	
 	telemetryConfig := appinsights.NewTelemetryConfiguration(instrumentationKey)
-	telemetryConfig.EndpointUrl = GetConfigString("azure", "endpoint_url", "https://dc.services.visualstudio.com/v2/track")
+	
+	// Set regional ingestion endpoint with required /v2/track path
+	if ingestionEndpoint != "" {
+		endpoint := strings.TrimSuffix(ingestionEndpoint, "/")
+		if !strings.HasSuffix(endpoint, "/v2/track") {
+			endpoint = endpoint + "/v2/track"
+		}
+		telemetryConfig.EndpointUrl = endpoint
+	}
+	
 	telemetryConfig.MaxBatchSize = GetConfigInt("azure", "max_batch_size", 8192)
 	telemetryConfig.MaxBatchInterval = time.Duration(GetConfigInt("azure", "max_batch_interval", 2)) * time.Second
 	
@@ -32,45 +73,35 @@ func NewAzureProvider() (*AzureProvider, error) {
 	}, nil
 }
 
-// Write writes a log entry to Azure Application Insights
+// Write sends a log entry to Azure Application Insights
 func (a *AzureProvider) Write(severity, message string, payload map[string]interface{}) error {
-	// Convert severity to Azure severity level
 	azureSeverity := parseAzureSeverity(severity)
-	
-	// Create a trace telemetry
 	trace := appinsights.NewTraceTelemetry(message, azureSeverity)
 	
-	// Add all payload fields as custom properties
 	for key, value := range payload {
 		trace.Properties[key] = fmt.Sprintf("%v", value)
 	}
 	
-	// Track the trace
 	a.client.Track(trace)
-	
 	return nil
 }
 
 // Close flushes and closes the Azure telemetry client
 func (a *AzureProvider) Close() error {
-	// Flush any pending telemetry
 	a.client.Channel().Flush()
 	
-	// Close the channel
 	select {
-	case <-a.client.Channel().Close(10): // Wait up to 10 seconds
+	case <-a.client.Channel().Close(10 * time.Second):
 		return nil
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("azure channel close timed out")
 	}
-	
-	return nil
 }
 
-// Name returns the provider name
 func (a *AzureProvider) Name() string {
 	return "azure"
 }
 
-// parseAzureSeverity converts severity string to Azure SeverityLevel
 func parseAzureSeverity(severity string) contracts.SeverityLevel {
 	switch severity {
 	case "DEBUG":

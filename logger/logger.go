@@ -93,7 +93,9 @@ func NewLogger() (*Logger, error) {
 	for _, dest := range cfg.Destinations {
 		if provider, err := providers.NewProvider(dest); err == nil {
 			providersList = append(providersList, provider)
-			log.Printf("✓ Logger provider: %s", dest)
+			log.Printf("✓ Logger provider initialized: %s", dest)
+		} else {
+			log.Printf("✗ Logger provider failed: %s - %v", dest, err)
 		}
 	}
 	
