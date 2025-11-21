@@ -1,4 +1,4 @@
-module github.com/thefindler/shared
+module github.com/thefindler/core
 
 go 1.23.1
 
