@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      new_tag: ${{ steps.increment_tag.outputs.new_tag }}
     
     steps:
       - name: Checkout code
@@ -53,3 +55,62 @@ jobs:
           git tag $NEW_TAG
           git push origin $NEW_TAG
 
+  update-dependents:
+    needs: tag
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false  # Continue with other repos even if one fails
+      matrix:
+        repo: [main, telephony]
+    steps:
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+
+      - name: Configure Git and Go for Private Modules
+        env:
+          TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Configure git to use PAT for authentication
+          git config --global url."https://${TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Configure Go to treat thefindler repos as private
+          echo "GOPRIVATE=github.com/thefindler/*" >> $GITHUB_ENV
+          echo "GONOPROXY=github.com/thefindler/*" >> $GITHUB_ENV
+          echo "GONOSUMDB=github.com/thefindler/*" >> $GITHUB_ENV
+
+      - name: Checkout ${{ matrix.repo }}
+        uses: actions/checkout@v4
+        with:
+          repository: thefindler/${{ matrix.repo }}
+          token: ${{ secrets.GH_PAT }}
+          path: ${{ matrix.repo }}
+
+      - name: Wait for tag to propagate
+        run: sleep 10
+
+      - name: Update core dependency
+        env:
+          NEW_TAG: ${{ needs.tag.outputs.new_tag }}
+        run: |
+          cd ${{ matrix.repo }}
+          
+          echo "Updating github.com/thefindler/core to $NEW_TAG"
+          
+          # Update the dependency
+          go get github.com/thefindler/core@$NEW_TAG
+          go mod tidy
+          
+          # Check if there are changes
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Changes detected, committing and pushing..."
+            git add go.mod go.sum
+            git commit -m "chore: update core dependency to $NEW_TAG"
+            git push
+            echo "Successfully updated ${{ matrix.repo }}"
+          else
+            echo "No changes needed for ${{ matrix.repo }}"
+          fi
