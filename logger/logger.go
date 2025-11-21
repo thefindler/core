@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/thefindler/shared/config"
-	"github.com/thefindler/shared/logger/providers"
+	"github.com/thefindler/core/config"
+	"github.com/thefindler/core/logger/providers"
 
 	"github.com/google/uuid"
 )
