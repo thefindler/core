@@ -13,6 +13,7 @@ type BlobStorage interface {
 	Upload(ctx context.Context, container, blobName string, data []byte) error
 	Download(ctx context.Context, container, blobName string) ([]byte, error)
 	Exists(ctx context.Context, container, blobName string) (bool, error)
+	EnsureContainer(ctx context.Context, container string) error
 }
 
 type azureBlobStorage struct {
@@ -63,6 +64,23 @@ func (s *azureBlobStorage) Exists(ctx context.Context, container, blobName strin
 		return false, nil
 	}
 	return true, nil
+}
+
+// EnsureContainer creates a container if it doesn't exist
+func (s *azureBlobStorage) EnsureContainer(ctx context.Context, container string) error {
+	containerClient := s.client.ServiceClient().NewContainerClient(container)
+	_, err := containerClient.Create(ctx, nil)
+	if err != nil {
+		// Check if error is because container already exists
+		// Azure returns an error even if container exists, so we check properties
+		_, existsErr := containerClient.GetProperties(ctx, nil)
+		if existsErr == nil {
+			// Container already exists, this is fine
+			return nil
+		}
+		return fmt.Errorf("failed to create container: %w", err)
+	}
+	return nil
 }
 
 

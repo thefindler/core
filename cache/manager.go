@@ -24,6 +24,9 @@ type Manager interface {
 	
 	// Increment is Redis-only
 	Increment(ctx context.Context, key string, opts Options) (int64, error)
+
+	// Decrement is Redis-only
+	Decrement(ctx context.Context, key string, opts Options) (int64, error)
 	
 	// Close connections
 	Close() error
@@ -126,6 +129,24 @@ func (m *cacheManager) Increment(ctx context.Context, key string, opts Options) 
 		m.redis.Expire(ctx, key, opts.TTL)
 	}
 	
+	return val, nil
+}
+
+func (m *cacheManager) Decrement(ctx context.Context, key string, opts Options) (int64, error) {
+	if !opts.UseRedis {
+		return 0, fmt.Errorf("decrement requires UseRedis=true")
+	}
+
+	val, err := m.redis.Decr(ctx, key).Result()
+	if err != nil {
+		return 0, err
+	}
+
+	// Set TTL if this is a fresh key or just extend it (optional, but consistent)
+	if opts.TTL > 0 {
+		m.redis.Expire(ctx, key, opts.TTL)
+	}
+
 	return val, nil
 }
 
