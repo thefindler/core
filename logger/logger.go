@@ -20,7 +20,7 @@ var (
 	globalLogger *Logger
 	once         sync.Once
 	initErr      error
-	
+
 	// Global config from LOG_CONFIG JSON (for providers to use)
 	LogConfig map[string]interface{}
 )
@@ -71,23 +71,23 @@ func NewLogger() (*Logger, error) {
 	if LogConfig == nil {
 		LogConfig = make(map[string]interface{})
 	}
-	
+
 	// Simple inline config loading
 	destinations := getDestinations()
 	asyncEnabled := config.GetConfig("LOG_ASYNC") != "false" // default true
 	bufferSize := getConfigInt("LOG_BUFFER_SIZE", 1000)
 	numWorkers := getConfigInt("LOG_NUM_WORKERS", 3)
-	
+
 	cfg := &Config{
 		Destinations: destinations,
 		AsyncEnabled: asyncEnabled,
 		BufferSize:   bufferSize,
 		NumWorkers:   numWorkers,
 	}
-	
+
 	// Pass config to providers
 	providers.ProviderConfig = LogConfig
-	
+
 	// Initialize providers
 	providersList := make([]providers.Provider, 0, len(cfg.Destinations))
 	for _, dest := range cfg.Destinations {
@@ -98,22 +98,22 @@ func NewLogger() (*Logger, error) {
 			log.Printf("✗ Logger provider failed: %s - %v", dest, err)
 		}
 	}
-	
+
 	if len(providersList) == 0 {
 		return nil, fmt.Errorf("no logging providers initialized")
 	}
-	
+
 	l := &Logger{
 		cfg:       cfg,
 		providers: providersList,
 		shutdown:  make(chan struct{}),
 	}
-	
+
 	if cfg.AsyncEnabled {
 		l.logChannel = make(chan LogEntry, cfg.BufferSize)
 		l.startWorkers()
 	}
-	
+
 	return l, nil
 }
 
@@ -159,13 +159,13 @@ func (l *Logger) startWorkers() {
 // worker processes log entries from the channel
 func (l *Logger) worker(workerID int) {
 	defer l.workerWg.Done()
-	
+
 	for {
 		select {
 		case entry := <-l.logChannel:
 			// Write to all providers
 			l.writeToProviders(entry)
-			
+
 		case <-l.shutdown:
 			// Drain remaining logs before shutdown
 			for len(l.logChannel) > 0 {
@@ -188,37 +188,37 @@ func (l *Logger) writeToProviders(entry LogEntry) {
 }
 
 // log is the internal logging function
-func (l *Logger) log(severity, message string, data map[string]interface{}, 
+func (l *Logger) log(severity, message string, data map[string]interface{},
 	agentID, conversationID *uuid.UUID, err error) {
-	
+
 	// Apply PII masking if enabled (read from config at runtime)
 	maskedMessage := message
 	maskedData := data
-	
+
 	piiMaskingEnabled := config.GetConfig("LOG_PII_MASKING") != "false" // default true
 	if piiMaskingEnabled {
 		maskedMessage = maskPIIString(message)
 		maskedData = maskPIIData(data)
 	}
-	
+
 	// Build payload
 	payload := make(map[string]interface{})
 	payload["message"] = maskedMessage
-	
+
 	if maskedData != nil {
 		for key, value := range maskedData {
 			payload[key] = value
 		}
 	}
-	
+
 	if agentID != nil {
 		payload["agent_id"] = agentID.String()
 	}
-	
+
 	if conversationID != nil {
 		payload["conversation_id"] = conversationID.String()
 	}
-	
+
 	if err != nil {
 		errorStr := fmt.Sprintf("%v", err)
 		if piiMaskingEnabled {
@@ -226,13 +226,13 @@ func (l *Logger) log(severity, message string, data map[string]interface{},
 		}
 		payload["error"] = errorStr
 	}
-	
+
 	// Console output in development mode (immediate, not buffered)
 	if config.GetConfig("ENV") == "development" {
 		color := getSeverityColorCode(severity)
 		log.Printf("[%s%s\033[0m] %s", color, severity, maskedMessage)
 	}
-	
+
 	entry := LogEntry{
 		Severity:       severity,
 		Message:        maskedMessage,
@@ -241,7 +241,7 @@ func (l *Logger) log(severity, message string, data map[string]interface{},
 		ConversationID: conversationID,
 		Error:          err,
 	}
-	
+
 	// Write async or sync based on configuration
 	if l.cfg.AsyncEnabled {
 		// Non-blocking send to channel
@@ -256,7 +256,7 @@ func (l *Logger) log(severity, message string, data map[string]interface{},
 					break
 				}
 			}
-			
+
 			// Log to stderr
 			fmt.Fprintf(os.Stderr, "[CRITICAL] Log buffer full! Dropped log: %s\n", maskedMessage)
 		}
@@ -272,21 +272,21 @@ func (l *Logger) Shutdown() {
 		if l.cfg.AsyncEnabled {
 			// Signal workers to shutdown
 			close(l.shutdown)
-			
+
 			// Wait for workers to finish
 			l.workerWg.Wait()
-			
+
 			// Close channel
 			close(l.logChannel)
 		}
-		
+
 		// Close all providers
 		for _, p := range l.providers {
 			if err := p.Close(); err != nil {
 				log.Printf("Error closing provider %s: %v", p.Name(), err)
 			}
 		}
-		
+
 		log.Println("✓ Logger shutdown complete")
 	})
 }
@@ -355,6 +355,52 @@ func MergeLogdata(maps ...map[string]interface{}) map[string]interface{} {
 	return merged
 }
 
+// ContextLogger provides a convenient way to log messages with pre-bound
+// AgentID, ConversationID, and common log data.
+type ContextLogger struct {
+	agentID        *uuid.UUID
+	conversationID *uuid.UUID
+	data           map[string]interface{}
+}
+
+// NewContextLogger creates a new ContextLogger with the given IDs and optional initial data
+func NewContextLogger(agentID, conversationID *uuid.UUID, initialData map[string]interface{}) *ContextLogger {
+	cl := &ContextLogger{
+		agentID:        agentID,
+		conversationID: conversationID,
+		data:           make(map[string]interface{}),
+	}
+	if initialData != nil {
+		cl.data = MergeLogdata(initialData)
+	}
+	return cl
+}
+
+// Info logs an informational message with additional specific data
+func (cl *ContextLogger) Info(message string, data map[string]interface{}) {
+	Info(message, MergeLogdata(cl.data, data), cl.agentID, cl.conversationID)
+}
+
+// Error logs an error message with additional specific data
+func (cl *ContextLogger) Error(message string, data map[string]interface{}, err error) {
+	Error(message, MergeLogdata(cl.data, data), cl.agentID, cl.conversationID, err)
+}
+
+// Warn logs a warning message with additional specific data
+func (cl *ContextLogger) Warn(message string, data map[string]interface{}, err error) {
+	Warn(message, MergeLogdata(cl.data, data), cl.agentID, cl.conversationID, err)
+}
+
+// Critical logs a critical error message with additional specific data
+func (cl *ContextLogger) Critical(message string, data map[string]interface{}, err error) {
+	Critical(message, MergeLogdata(cl.data, data), cl.agentID, cl.conversationID, err)
+}
+
+// Debug logs a debug message with additional specific data
+func (cl *ContextLogger) Debug(message string, data map[string]interface{}) {
+	Debug(message, MergeLogdata(cl.data, data), cl.agentID, cl.conversationID)
+}
+
 // getSeverityColorCode returns ANSI color code for severity
 func getSeverityColorCode(severity string) string {
 	switch severity {
@@ -372,4 +418,3 @@ func getSeverityColorCode(severity string) string {
 		return "\033[0m"
 	}
 }
-
